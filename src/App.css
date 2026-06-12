@@ -227,6 +227,10 @@ button {
   align-items: start;
 }
 
+.app-main .analysis-grid > .match-panel {
+  margin-top: 34px;
+}
+
 .content-column {
   min-width: 0;
 }
@@ -942,6 +946,10 @@ button {
 
   .match-panel {
     position: static;
+  }
+
+  .app-main .analysis-grid > .match-panel {
+    margin-top: 0;
   }
 
   .team-grid {
