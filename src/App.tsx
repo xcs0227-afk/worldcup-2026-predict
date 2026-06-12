@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Globe2,
   Info,
+  PlayCircle,
   Search,
   ShieldCheck,
   SlidersHorizontal,
@@ -58,6 +59,10 @@ type Match = {
     value: string
   }>
 }
+
+const SITE_TITLE = '2026美加墨足球世界杯'
+const FIFA_FIXTURES_URL =
+  'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/scores-fixtures'
 
 type DataMode = 'live' | 'fallback' | 'snapshot' | 'loading'
 
@@ -782,14 +787,42 @@ function ProbabilityBar({ match }: { match: Match }) {
   )
 }
 
+function matchInfoUrl(match: Match) {
+  const home = getTeam(match.home)
+  const away = getTeam(match.away)
+  if (match.status === '已结束') {
+    const query = encodeURIComponent(
+      `${home.name} ${away.name} 2026 世界杯 集锦 回放`,
+    )
+    return `https://www.youtube.com/results?search_query=${query}`
+  }
+  return FIFA_FIXTURES_URL
+}
+
 function WatchEntry({ match }: { match: Match }) {
   const unavailable = match.watch === '暂不可用'
+  const isFinished = match.status === '已结束'
+  const label = unavailable
+    ? '观看入口暂不可用'
+    : isFinished
+      ? '赛事回放'
+      : match.watch
+
   return (
-    <button className={unavailable ? 'watch muted' : 'watch'} type="button">
-      <Tv size={14} />
-      <span>{unavailable ? '观看入口暂不可用' : match.watch}</span>
+    <a
+      className={unavailable ? 'watch muted' : 'watch'}
+      href={unavailable ? undefined : matchInfoUrl(match)}
+      onClick={(event) => {
+        event.stopPropagation()
+        if (unavailable) event.preventDefault()
+      }}
+      rel="noreferrer"
+      target={unavailable ? undefined : '_blank'}
+    >
+      {isFinished ? <PlayCircle size={14} /> : <Tv size={14} />}
+      <span>{label}</span>
       {!unavailable && <ExternalLink size={12} />}
-    </button>
+    </a>
   )
 }
 
@@ -806,10 +839,17 @@ function MatchRow({
   const away = getTeam(match.away)
 
   return (
-    <button
-      type="button"
+    <article
       className={active ? 'match-row active' : 'match-row'}
       onClick={() => onSelect(match)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect(match)
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
       <div className="time-cell">
         <strong>{match.time}</strong>
@@ -847,7 +887,7 @@ function MatchRow({
         <small>{match.updatedAt}</small>
       </div>
       <WatchEntry match={match} />
-    </button>
+    </article>
   )
 }
 
@@ -1065,6 +1105,50 @@ function ScheduleBoard({
   )
 }
 
+function FinishedMatches({
+  items,
+  onSelect,
+}: {
+  items: Match[]
+  onSelect: (match: Match) => void
+}) {
+  if (items.length === 0) {
+    return null
+  }
+
+  return (
+    <section className="finished-section">
+      <div className="finished-header">
+        <div>
+          <h2>已结束赛事</h2>
+          <p>展示最近完赛比分；回放入口跳转到公开集锦/回放检索。</p>
+        </div>
+        <span>结果以数据源最新同步为准</span>
+      </div>
+      <div className="finished-list">
+        {items.map((match) => {
+          const home = getTeam(match.home)
+          const away = getTeam(match.away)
+          return (
+            <article className="finished-card" key={match.id}>
+              <button type="button" onClick={() => onSelect(match)}>
+                <span>
+                  {match.date} {match.time} · {match.group} {match.round}
+                </span>
+                <strong>
+                  {home.name} {match.score ?? '-'} {away.name}
+                </strong>
+                <small>{match.venue}</small>
+              </button>
+              <WatchEntry match={match} />
+            </article>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 function Home({
   selectedDate,
   setSelectedDate,
@@ -1073,6 +1157,7 @@ function Home({
   query,
   setQuery,
   filteredMatches,
+  finishedMatches,
   selectedMatch,
   setSelectedMatch,
 }: {
@@ -1083,6 +1168,7 @@ function Home({
   query: string
   setQuery: (query: string) => void
   filteredMatches: Match[]
+  finishedMatches: Match[]
   selectedMatch: Match
   setSelectedMatch: (match: Match) => void
 }) {
@@ -1099,6 +1185,10 @@ function Home({
               setStage={setStage}
             />
           </section>
+          <FinishedMatches
+            items={finishedMatches}
+            onSelect={setSelectedMatch}
+          />
           <div className="board-title">
             <div>
               <h1>2026年6月12日赛前分析</h1>
@@ -1397,6 +1487,14 @@ function App() {
     })
   }, [matchItems, query, selectedDate, stage])
 
+  const finishedMatches = useMemo(
+    () =>
+      matchItems
+        .filter((match) => match.status === '已结束')
+        .slice(0, 4),
+    [matchItems],
+  )
+
   const statusText =
     dataMode === 'live'
       ? '实时'
@@ -1410,9 +1508,11 @@ function App() {
     <div className="app-shell">
       <header className="app-header">
         <button className="brand" type="button" onClick={() => setPage('home')}>
-          <span className="brand-mark">26</span>
+          <span className="brand-mark">
+            <img alt="" src={`${import.meta.env.BASE_URL}logo.png`} />
+          </span>
           <span>
-            <strong>2026 世界杯赛前概率分析</strong>
+            <strong>{SITE_TITLE}</strong>
             <small>用数据、模型和不确定性看比赛</small>
           </span>
         </button>
@@ -1440,6 +1540,7 @@ function App() {
 
       {page === 'home' && (
         <Home
+          finishedMatches={finishedMatches}
           filteredMatches={filteredMatches}
           query={query}
           selectedDate={selectedDate}
