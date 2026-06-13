@@ -842,7 +842,11 @@ const nav: Array<{ page: Page; label: string }> = [
 
 function getTeam(id: string) {
   const team = teamRegistry.find((item) => item.id === id)
-  if (!team) throw new Error(`Missing team ${id}`)
+  if (!team) {
+    const fallbackTeam = makeTeam(teamNameRegistry[id] ?? id)
+    teamRegistry = [...teamRegistry, fallbackTeam]
+    return fallbackTeam
+  }
   return team
 }
 
