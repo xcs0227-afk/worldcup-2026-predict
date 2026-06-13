@@ -66,6 +66,12 @@ const FIFA_FIXTURES_URL =
 
 type DataMode = 'live' | 'fallback' | 'snapshot' | 'loading'
 
+type DateOption = {
+  key: string
+  label: string
+  sub: string
+}
+
 type LiveGame = {
   id?: string
   group?: string
@@ -99,6 +105,27 @@ type OpenFootballPayload = {
 const LIVE_API_URL = 'https://worldcup26.ir/get/games'
 const OPEN_FOOTBALL_URL =
   'https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json'
+
+const LIVE_STADIUM_UTC_OFFSET: Record<string, number> = {
+  '1': -6,
+  '2': -6,
+  '3': -6,
+  '4': -5,
+  '5': -5,
+  '6': -5,
+  '7': -4,
+  '8': -4,
+  '9': -4,
+  '10': -4,
+  '11': -4,
+  '12': -4,
+  '13': -7,
+  '14': -7,
+  '15': -7,
+  '16': -7,
+}
+
+const BEIJING_UTC_OFFSET = 8
 
 const teams: Team[] = [
   {
@@ -630,18 +657,92 @@ function factorsFor(homeName: string, awayName: string) {
 
 function weekdayFor(date: string) {
   const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-  return weekdays[new Date(`${date}T00:00:00`).getDay()]
+  return weekdays[new Date(`${date}T00:00:00Z`).getUTCDay()]
 }
 
-function parseLiveDate(input?: string) {
+function getBeijingTodayKey() {
+  const beijing = new Date(Date.now() + BEIJING_UTC_OFFSET * 60 * 60 * 1000)
+  return `${beijing.getUTCFullYear()}-${String(
+    beijing.getUTCMonth() + 1,
+  ).padStart(2, '0')}-${String(beijing.getUTCDate()).padStart(2, '0')}`
+}
+
+function addDays(date: string, days: number) {
+  const next = new Date(`${date}T00:00:00Z`)
+  next.setUTCDate(next.getUTCDate() + days)
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(
+    2,
+    '0',
+  )}-${String(next.getUTCDate()).padStart(2, '0')}`
+}
+
+function formatDateOption(date: string, today = getBeijingTodayKey()): DateOption {
+  const [, month, day] = date.split('-')
+  const tomorrow = addDays(today, 1)
+  return {
+    key: date,
+    label:
+      date === today
+        ? '今天'
+        : date === tomorrow
+          ? '明天'
+          : `${Number(month)}/${Number(day)}`,
+    sub: `${Number(month)}/${Number(day)} ${weekdayFor(date)}`,
+  }
+}
+
+function formatChineseDate(date: string) {
+  const [year, month, day] = date.split('-')
+  return `${year}年${Number(month)}月${Number(day)}日`
+}
+
+function buildDateOptions(items: Match[], selectedDate: string) {
+  const dates = Array.from(new Set(items.map((match) => match.date))).sort()
+  const visibleDates = dates.includes(selectedDate)
+    ? dates
+    : [selectedDate, ...dates]
+  return visibleDates.slice(0, 7).map((date) => formatDateOption(date))
+}
+
+function toBeijingDateTime(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  sourceUtcOffset: number,
+) {
+  const utcMillis = Date.UTC(
+    year,
+    month - 1,
+    day,
+    hour - sourceUtcOffset,
+    minute,
+  )
+  const beijing = new Date(utcMillis + BEIJING_UTC_OFFSET * 60 * 60 * 1000)
+  const date = `${beijing.getUTCFullYear()}-${String(
+    beijing.getUTCMonth() + 1,
+  ).padStart(2, '0')}-${String(beijing.getUTCDate()).padStart(2, '0')}`
+  const time = `${String(beijing.getUTCHours()).padStart(2, '0')}:${String(
+    beijing.getUTCMinutes(),
+  ).padStart(2, '0')}`
+  return { date, time }
+}
+
+function parseLiveDate(input?: string, stadiumId?: string) {
   if (!input) return { date: '2026-06-12', time: '--:--' }
   const [datePart, time = '--:--'] = input.split(' ')
   const [month, day, year] = datePart.split('/')
   if (!month || !day || !year) return { date: '2026-06-12', time }
-  return {
-    date: `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`,
-    time: time.slice(0, 5),
-  }
+  const [hour = '0', minute = '0'] = time.split(':')
+  return toBeijingDateTime(
+    Number(year),
+    Number(month),
+    Number(day),
+    Number(hour),
+    Number(minute),
+    LIVE_STADIUM_UTC_OFFSET[stadiumId ?? ''] ?? -5,
+  )
 }
 
 function mapLiveGame(game: LiveGame): Match {
@@ -649,7 +750,7 @@ function mapLiveGame(game: LiveGame): Match {
   const awayName = game.away_team_name_en || 'Unknown Away'
   rememberTeam(homeName)
   rememberTeam(awayName)
-  const { date, time } = parseLiveDate(game.local_date)
+  const { date, time } = parseLiveDate(game.local_date, game.stadium_id)
   const prediction = generatedPrediction(homeName, awayName)
   const finished = game.finished === 'TRUE' || game.time_elapsed === 'finished'
   const group = game.group ? `${game.group}组` : '待定组'
@@ -680,8 +781,21 @@ function mapLiveGame(game: LiveGame): Match {
   }
 }
 
-function parseOpenFootballTime(raw?: string) {
-  return raw?.split(' ')[0] ?? '--:--'
+function parseOpenFootballDateTime(date: string, raw?: string) {
+  if (!raw) return { date, time: '--:--' }
+  const [time, offsetToken] = raw.split(' ')
+  const [hour = '0', minute = '0'] = time.split(':')
+  const match = offsetToken?.match(/^UTC([+-]\d{1,2})$/)
+  if (!match) return { date, time }
+  const [year, month, day] = date.split('-').map(Number)
+  return toBeijingDateTime(
+    year,
+    month,
+    day,
+    Number(hour),
+    Number(minute),
+    Number(match[1]),
+  )
 }
 
 function mapOpenFootball(match: OpenFootballMatch, index: number): Match {
@@ -690,11 +804,12 @@ function mapOpenFootball(match: OpenFootballMatch, index: number): Match {
   const prediction = generatedPrediction(match.team1, match.team2)
   const group = match.group?.replace('Group ', '') ?? '待定'
   const finished = Boolean(match.score?.ft)
+  const { date, time } = parseOpenFootballDateTime(match.date, match.time)
   return {
     id: `open-${index}`,
-    date: match.date,
-    weekday: weekdayFor(match.date),
-    time: parseOpenFootballTime(match.time),
+    date,
+    weekday: weekdayFor(date),
+    time,
     stage: match.group ? '小组赛' : '16强',
     round: match.round ?? '待定轮次',
     group: `${group}组`,
@@ -716,16 +831,6 @@ function mapOpenFootball(match: OpenFootballMatch, index: number): Match {
     factors: factorsFor(match.team1, match.team2),
   }
 }
-
-const dates = [
-  { key: '2026-06-12', label: '今天', sub: '6/12 周五' },
-  { key: '2026-06-13', label: '明天', sub: '6/13 周六' },
-  { key: '2026-06-14', label: '6/14', sub: '周日' },
-  { key: '2026-06-15', label: '6/15', sub: '周一' },
-  { key: '2026-06-16', label: '6/16', sub: '周二' },
-  { key: '2026-06-17', label: '6/17', sub: '周三' },
-  { key: '2026-06-18', label: '更多日期', sub: '' },
-]
 
 const nav: Array<{ page: Page; label: string }> = [
   { page: 'home', label: '首页' },
@@ -909,7 +1014,7 @@ function MatchPanel({
             {home.name} VS {away.name}
           </h2>
           <p>
-            {match.group} {match.round} · {match.date} {match.time}（来源时间）
+            {match.group} {match.round} · {match.date} {match.time}（北京时间）
           </p>
           <span>{match.venue}</span>
         </div>
@@ -1002,15 +1107,17 @@ function MatchPanel({
 }
 
 function DateRail({
+  dateOptions,
   selectedDate,
   onSelect,
 }: {
+  dateOptions: DateOption[]
   selectedDate: string
   onSelect: (date: string) => void
 }) {
   return (
     <div className="date-rail" aria-label="日期筛选">
-      {dates.map((date) => (
+      {dateOptions.map((date) => (
         <button
           className={selectedDate === date.key ? 'selected' : ''}
           type="button"
@@ -1150,6 +1257,7 @@ function FinishedMatches({
 }
 
 function Home({
+  dateOptions,
   selectedDate,
   setSelectedDate,
   stage,
@@ -1161,6 +1269,7 @@ function Home({
   selectedMatch,
   setSelectedMatch,
 }: {
+  dateOptions: DateOption[]
   selectedDate: string
   setSelectedDate: (date: string) => void
   stage: Stage
@@ -1177,7 +1286,11 @@ function Home({
       <div className="analysis-grid">
         <section className="content-column">
           <section className="toolbar">
-            <DateRail selectedDate={selectedDate} onSelect={setSelectedDate} />
+            <DateRail
+              dateOptions={dateOptions}
+              selectedDate={selectedDate}
+              onSelect={setSelectedDate}
+            />
             <Filters
               query={query}
               setQuery={setQuery}
@@ -1185,13 +1298,10 @@ function Home({
               setStage={setStage}
             />
           </section>
-          <FinishedMatches
-            items={finishedMatches}
-            onSelect={setSelectedMatch}
-          />
+          <FinishedMatches items={finishedMatches} onSelect={setSelectedMatch} />
           <div className="board-title">
             <div>
-              <h1>2026年6月12日赛前分析</h1>
+              <h1>{formatChineseDate(selectedDate)}赛前分析</h1>
               <p>按时间线查看每场比赛的胜平负概率、预期进球和观看信息。</p>
             </div>
             <span className="status-pill">
@@ -1236,9 +1346,11 @@ function DataFooter() {
 }
 
 function SchedulePage({
+  items,
   selectedMatch,
   setSelectedMatch,
 }: {
+  items: Match[]
   selectedMatch: Match
   setSelectedMatch: (match: Match) => void
 }) {
@@ -1246,10 +1358,10 @@ function SchedulePage({
     <main className="page-shell">
       <div className="page-heading">
         <h1>赛程页</h1>
-        <p>支持按日期、球队、阶段筛选；抓取失败时保留最后更新时间。</p>
+        <p>支持按日期、球队、阶段筛选；所有比赛时间均为北京时间。</p>
       </div>
       <ScheduleBoard
-        items={matches}
+        items={items}
         selectedMatch={selectedMatch}
         setSelectedMatch={setSelectedMatch}
       />
@@ -1271,7 +1383,7 @@ function MatchDetailPage({ match }: { match: Match }) {
           {home.name} VS {away.name}
         </h1>
         <p>
-          {match.date} {match.time}（来源时间） · {match.venue}
+          {match.date} {match.time}（北京时间） · {match.venue}
         </p>
         <div className="score-state">
           <span>{match.score ?? '赛前未开赛'}</span>
@@ -1357,7 +1469,7 @@ function TeamsPage({ items }: { items: Team[] }) {
 
 function App() {
   const [page, setPage] = useState<Page>('home')
-  const [selectedDate, setSelectedDate] = useState('2026-06-12')
+  const [selectedDate, setSelectedDate] = useState(getBeijingTodayKey())
   const [stage, setStage] = useState<Stage>('全部阶段')
   const [query, setQuery] = useState('')
   const [matchItems, setMatchItems] = useState<Match[]>(matches)
@@ -1404,8 +1516,9 @@ function App() {
           throw new Error('live source returned empty games')
         }
         if (!cancelled) {
+          const today = getBeijingTodayKey()
           const firstRelevant =
-            liveMatches.find((match) => match.date >= '2026-06-12') ??
+            liveMatches.find((match) => match.date >= today) ??
             liveMatches[0]
           applyDataset(liveMatches, 'live', '实时 API 已连接')
           setSelectedDate(firstRelevant.date)
@@ -1436,8 +1549,9 @@ function App() {
             return
           }
           if (!cancelled) {
+            const today = getBeijingTodayKey()
             const firstRelevant =
-              fallbackMatches.find((match) => match.date >= '2026-06-12') ??
+              fallbackMatches.find((match) => match.date >= today) ??
               fallbackMatches[0]
             applyDataset(
               fallbackMatches,
@@ -1475,8 +1589,7 @@ function App() {
     return matchItems.filter((match) => {
       const home = getTeam(match.home)
       const away = getTeam(match.away)
-      const dateMatches =
-        selectedDate === '2026-06-18' || match.date === selectedDate
+      const dateMatches = match.date === selectedDate
       const stageMatches = stage === '全部阶段' || match.stage === stage
       const queryMatches =
         normalizedQuery.length === 0 ||
@@ -1486,6 +1599,11 @@ function App() {
       return dateMatches && stageMatches && queryMatches
     })
   }, [matchItems, query, selectedDate, stage])
+
+  const dateOptions = useMemo(
+    () => buildDateOptions(matchItems, selectedDate),
+    [matchItems, selectedDate],
+  )
 
   const finishedMatches = useMemo(
     () =>
@@ -1540,6 +1658,7 @@ function App() {
 
       {page === 'home' && (
         <Home
+          dateOptions={dateOptions}
           finishedMatches={finishedMatches}
           filteredMatches={filteredMatches}
           query={query}
@@ -1554,6 +1673,7 @@ function App() {
       )}
       {page === 'schedule' && (
         <SchedulePage
+          items={matchItems}
           selectedMatch={selectedMatch}
           setSelectedMatch={setSelectedMatch}
         />
